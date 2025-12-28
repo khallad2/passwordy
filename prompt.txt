@@ -1,0 +1,271 @@
+You are Antigravity, an expert full-stack generator. Build a production-quality **self-hosted password vault web app** with **React (frontend)** + **FastAPI (backend)**, using **Docker for everything**.
+
+### 0) High-level goal
+
+Create a small web application that acts as a **central place to store accounts/passwords** and quickly **copy passwords** for login pages. The app requires **login** and encrypts stored passwords **at rest**.
+
+### 1) Non-negotiable constraints
+
+* Everything runs via **Docker Compose** (backend, frontend, database, migrations).
+* Backend: **Python + FastAPI**
+* Frontend: **React** (TypeScript preferred) with a **futuristic black/purple UI theme**
+* Passwords stored in DB must be **encrypted at rest** (not just hashed).
+* Login uses **username + password**.
+* UX: list of “tiles” (cards) representing saved accounts; click to view/edit; create new entry via “+” icon.
+
+### 2) Scope (what to build)
+
+#### 2.1 User flows
+
+1. **First time opening app**
+
+   * User lands on login screen.
+   * Provide a way to create the **initial user** (two acceptable approaches):
+
+     * Option A (preferred): backend auto-creates an initial admin user from environment variables `INITIAL_USERNAME` and `INITIAL_PASSWORD` if no users exist.
+     * Option B: a `/setup` page allowed only when no users exist, then disabled forever.
+2. **Login**
+
+   * Username + password.
+   * On success, user is redirected to the vault home.
+3. **Home (vault)**
+
+   * Display a grid/list of **account tiles** showing **Account Name** (and optionally URL domain favicon).
+   * Search/filter by account name or URL.
+   * A prominent **“+”** floating action button to create a new entry.
+4. **Create entry**
+
+   * Fields: `Account Name`, `URL`, `Email/Username`, `Password`
+   * Password input includes:
+
+     * **Copy button** (copies the raw password to clipboard)
+     * Show/hide toggle
+     * Optional “generate password” button (nice-to-have)
+   * Save creates a new tile on the home screen.
+5. **View/update entry**
+
+   * Clicking a tile opens a detail page/modal where user can view/update:
+
+     * URL, email/username, password
+   * Password remains masked by default; copy button available.
+6. **Delete entry**
+
+   * Provide delete action with confirmation.
+
+#### 2.2 Data model (minimum)
+
+* `users`
+
+  * `id` (uuid)
+  * `username` (unique)
+  * `password_hash` (argon2 or bcrypt)
+  * `created_at`, `updated_at`
+* `vault_items`
+
+  * `id` (uuid)
+  * `user_id` (fk)
+  * `account_name` (string)
+  * `url` (string, nullable)
+  * `login` (string: email/username, nullable)
+  * `password_encrypted` (bytes/base64 string)
+  * `password_nonce` (bytes/base64 string) if using AES-GCM
+  * `created_at`, `updated_at`
+
+### 3) Security requirements (must implement)
+
+1. **Authentication**
+
+   * Password hashing: **Argon2** preferred; bcrypt acceptable.
+   * Issue session via **JWT** stored as **HttpOnly cookie** (preferred) OR Authorization Bearer token (acceptable). If using cookie, handle CSRF appropriately (double submit or same-site strict + non-GET protections).
+2. **Encryption at rest for vault passwords**
+
+   * Encrypt/decrypt passwords on the backend only.
+   * Use modern authenticated encryption:
+
+     * Preferred: **AES-GCM** with per-record nonce, key derived from master key.
+     * Alternative: **Fernet** (cryptography) acceptable if implemented correctly.
+   * Master encryption key comes from env: `VAULT_MASTER_KEY` (base64).
+   * Derive a **per-user key** from master key + user_id using HKDF (preferred) to limit blast radius.
+   * Store only encrypted blob + nonce in DB.
+3. **Secrets handling**
+
+   * No secrets committed to repo.
+   * Provide `.env.example` with required env vars.
+4. **CORS**
+
+   * Configure properly for local Docker dev and production.
+5. **Input validation**
+
+   * Validate URL format, lengths, required fields.
+6. **Audit-friendly logs**
+
+   * Log auth events and CRUD events without logging plaintext passwords.
+
+### 4) Tech choices (use these unless impossible)
+
+#### Backend
+
+* FastAPI
+* SQLAlchemy 2.0 + Alembic migrations
+* PostgreSQL (Docker)
+* Pydantic v2
+* cryptography library for AES-GCM + HKDF
+* argon2-cffi (or passlib with argon2) for hashing
+* Uvicorn
+* Pytest for basic tests
+
+#### Frontend
+
+* React + TypeScript (Vite)
+* UI: TailwindCSS + a small component set (shadcn/ui or custom minimal components)
+* Futuristic theme: black background, purple neon accents, subtle gradients, glow, glassmorphism cards.
+* Use `navigator.clipboard.writeText()` for copy.
+* Basic form validation and good loading/error states.
+
+### 5) API contract (define and implement)
+
+Base path: `/api`
+
+#### Auth
+
+* `POST /api/auth/login`
+
+  * body: `{ "username": "...", "password": "..." }`
+  * returns: 200 + sets cookie (preferred) OR `{ token }`
+* `POST /api/auth/logout`
+* `GET /api/auth/me`
+
+  * returns current user
+
+#### Vault items
+
+* `GET /api/vault/items?query=...`
+* `POST /api/vault/items`
+
+  * body: `{ account_name, url, login, password }` (password plaintext in request only)
+* `GET /api/vault/items/{id}`
+
+  * returns decrypted password only if explicitly requested:
+
+    * Preferred: return `password_masked: true` and a separate endpoint for reveal
+* `PUT /api/vault/items/{id}`
+
+  * body includes optional `password` to rotate
+* `DELETE /api/vault/items/{id}`
+
+**Important UX/security detail**: For safer defaults, do one of:
+
+* Option A: `GET item` does NOT return decrypted password; provide `POST /items/{id}/reveal` to fetch decrypted password on demand.
+* Option B: return decrypted password only when user presses “reveal”, triggered by the UI.
+
+Implement at least one of these options.
+
+### 6) UX/UI specification (futuristic black/purple)
+
+* Layout:
+
+  * Top nav with app name (“Vault” or user-defined) + logout
+  * Home grid of tiles (cards) with hover glow
+  * Floating “+” action button bottom-right
+* Visual style:
+
+  * Background: near-black with subtle purple gradient noise
+  * Tiles: glass effect, border glow, neon purple highlights
+  * Buttons: purple neon with soft shadow
+  * Inputs: dark, high-contrast, focus ring purple
+* Accessibility:
+
+  * Keyboard navigation and focus states
+  * Copy button gives toast confirmation (“Copied”)
+* Performance:
+
+  * Fast initial load; optimistic UI optional
+
+### 7) Docker-first requirements
+
+Provide:
+
+1. `docker-compose.yml` with services:
+
+   * `db` (postgres with volume)
+   * `backend` (FastAPI)
+   * `frontend` (React)
+2. Backend Dockerfile:
+
+   * installs deps
+   * runs alembic migrations on startup (or separate migration command)
+3. Frontend Dockerfile:
+
+   * dev mode with hot reload OR production build served by nginx (choose one, but also provide a production path)
+4. Healthchecks for db and backend
+5. Single command to start: `docker compose up --build`
+
+### 8) Repo structure (must produce)
+
+Example:
+
+* `/backend`
+
+  * `app/`
+
+    * `main.py`
+    * `config.py`
+    * `db.py`
+    * `models.py`
+    * `schemas.py`
+    * `auth/` (routers, security utilities)
+    * `vault/` (routers, service layer)
+    * `crypto/` (encryption utilities)
+  * `alembic/`
+  * `tests/`
+  * `Dockerfile`
+* `/frontend`
+
+  * `src/` (pages, components, api client)
+  * `Dockerfile`
+* `docker-compose.yml`
+* `.env.example`
+* `README.md`
+
+### 9) Implementation details (do not skip)
+
+* Use a clean architecture approach:
+
+  * Router -> Service -> Repository (or equivalent separation)
+* Add pagination readiness (even if not used).
+* Ensure database indices on `(user_id, account_name)` for fast search.
+* Provide meaningful error messages in API with proper HTTP codes.
+* Add minimal unit tests for:
+
+  * encryption/decryption roundtrip
+  * auth login flow (happy path)
+  * create/list vault items
+
+### 10) README requirements
+
+Generate a `README.md` that includes:
+
+* What the app does
+* Security model overview (hashing vs encryption)
+* Setup instructions (env vars, running docker compose)
+* How to run migrations
+* Dev workflow
+* API overview
+
+### 11) Acceptance criteria checklist
+
+The output is complete when:
+
+* `docker compose up --build` launches frontend, backend, and DB successfully.
+* User can login (and initial user creation works via env or setup page).
+* User can create unlimited tiles.
+* Clicking a tile opens details; user can update fields.
+* Password is encrypted in DB (verify by checking raw DB record; no plaintext).
+* Copy password button works and shows a toast.
+* UI matches futuristic black/purple aesthetic.
+
+### 12) Output format
+
+Produce the full project as actual files (not pseudocode). Include all code needed to run. Avoid placeholders except `.env.example`.
+
+Now generate the full repository accordingly.
